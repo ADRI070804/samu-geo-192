@@ -6,41 +6,46 @@
   <title>SAMU 192 - Compartilhar localização</title>
   <style>
     :root { font-family: Arial, Helvetica, sans-serif; }
+    * { box-sizing: border-box; }
     body { margin:0; background:#f4f6f8; color:#111; }
-    .wrap { max-width:520px; margin:0 auto; padding:24px; }
-    .card { background:#fff; border-radius:18px; padding:24px; box-shadow:0 5px 22px rgba(0,0,0,.10); }
-    h1 { margin:0 0 8px; font-size:28px; }
-    .sub { font-size:18px; line-height:1.45; margin-bottom:22px; }
-    .badge { display:inline-block; font-weight:700; padding:7px 11px; background:#eef1f4; border-radius:10px; margin-bottom:16px; }
-    button { width:100%; min-height:62px; border:0; border-radius:14px; font-size:20px; font-weight:800; cursor:pointer; padding:12px; }
-    #locBtn { background:#111; color:white; }
-    #retryBtn { margin-top:12px; background:#e9ecef; display:none; }
-    #status { margin-top:18px; min-height:48px; font-size:17px; line-height:1.4; }
-    .small { font-size:14px; color:#555; line-height:1.4; margin-top:18px; }
-    .success { font-weight:700; }
+    .wrap { max-width:560px; margin:0 auto; padding:16px; }
+    .card { background:#fff; border-radius:20px; overflow:hidden; box-shadow:0 5px 22px rgba(0,0,0,.10); }
+    .hero { width:100%; display:block; background:#fff; }
+    .content { padding:22px; }
+    .sub { font-size:18px; line-height:1.45; margin:0 0 18px; text-align:center; }
+    button { width:100%; min-height:64px; border:0; border-radius:14px; font-size:20px; font-weight:800; cursor:pointer; padding:14px; }
+    #locBtn { background:#c81010; color:#fff; }
+    #retryBtn { margin-top:12px; background:#e9ecef; color:#111; display:none; }
+    #status { margin-top:18px; min-height:48px; font-size:17px; line-height:1.4; text-align:center; }
+    .small { font-size:14px; color:#555; line-height:1.4; margin-top:18px; text-align:center; }
     .error { font-weight:700; }
+    @media (max-width:420px) {
+      .wrap { padding:10px; }
+      .content { padding:18px; }
+      .sub { font-size:17px; }
+      button { font-size:18px; }
+    }
   </style>
 </head>
 <body>
 <div class="wrap">
   <div class="card">
-    <div class="badge">SAMU 192</div>
-    <h1>Compartilhar localização</h1>
-    <p class="sub">Toque no botão abaixo e, quando o celular perguntar, escolha <b>Permitir localização</b>.</p>
-    <button id="locBtn">PERMITIR LOCALIZAÇÃO</button>
-    <button id="retryBtn">TENTAR NOVAMENTE</button>
-    <div id="status"></div>
-    <p class="small">Sua localização será usada somente para auxiliar o atendimento desta ocorrência. O endereço informado por telefone continua sendo confirmado pela Central.</p>
+    <img src="samu_localizacao.png" alt="SAMU 192 - Envie sua localização" class="hero">
+    <div class="content">
+      <p class="sub">Toque no botão abaixo e, quando o celular perguntar, escolha <b>Permitir localização</b>.</p>
+      <button id="locBtn">PERMITIR LOCALIZAÇÃO</button>
+      <button id="retryBtn">TENTAR NOVAMENTE</button>
+      <div id="status"></div>
+      <p class="small">Sua localização será usada somente para auxiliar o atendimento desta ocorrência. O endereço informado por telefone continua sendo confirmado pela Central.</p>
+    </div>
   </div>
 </div>
 
 <script>
 const BACKEND_URL = "https://script.google.com/macros/s/AKfycbw7n1frCkcQ_1ACqrzLuMfqf1Cyj9--v1MiDh6e_lK_DbHdQsdgBe8yWLO0o9apM8nP3g/exec";
-
 const params = new URLSearchParams(location.search);
 const ocorrencia = params.get("oc") || "";
 const token = params.get("t") || "";
-
 const locBtn = document.getElementById("locBtn");
 const retryBtn = document.getElementById("retryBtn");
 const statusBox = document.getElementById("status");
@@ -52,20 +57,10 @@ function setStatus(msg, cls="") {
 
 function submitLocation(lat, lng, accuracy) {
   setStatus("Localização encontrada. Enviando para a Central…");
-
   const form = document.createElement("form");
   form.method = "POST";
   form.action = BACKEND_URL;
-
-  const fields = {
-    oc: ocorrencia,
-    t: token,
-    lat: lat,
-    lng: lng,
-    acc: accuracy,
-    deviceTime: new Date().toISOString()
-  };
-
+  const fields = { oc:ocorrencia, t:token, lat:lat, lng:lng, acc:accuracy, deviceTime:new Date().toISOString() };
   for (const [name, value] of Object.entries(fields)) {
     const input = document.createElement("input");
     input.type = "hidden";
@@ -73,7 +68,6 @@ function submitLocation(lat, lng, accuracy) {
     input.value = String(value);
     form.appendChild(input);
   }
-
   document.body.appendChild(form);
   form.submit();
 }
@@ -84,25 +78,24 @@ function localizar() {
 
   if (!ocorrencia || !token) {
     setStatus("Link inválido. Ligue novamente para o 192 e solicite um novo link.", "error");
+    locBtn.disabled = false;
     return;
   }
 
   if (!navigator.geolocation) {
     setStatus("Este aparelho não permite obter a localização pelo navegador. Informe o endereço à Central.", "error");
+    locBtn.disabled = false;
     return;
   }
 
   setStatus("Obtendo sua localização… mantenha esta tela aberta.");
 
-  let best = null;
-  let watchId = null;
-  let finished = false;
+  let best = null, watchId = null, finished = false;
 
   function finish() {
     if (finished) return;
     finished = true;
     if (watchId !== null) navigator.geolocation.clearWatch(watchId);
-
     if (!best) {
       setStatus("Não foi possível obter a localização. Confirme o endereço por telefone com a Central.", "error");
       locBtn.disabled = false;
