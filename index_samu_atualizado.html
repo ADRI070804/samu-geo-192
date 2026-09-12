@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>SAMU 192 - Compartilhar localização</title>
+  <style>
+    :root { font-family: Arial, Helvetica, sans-serif; }
+    * { box-sizing: border-box; }
+    body { margin:0; background:#f4f6f8; color:#111; }
+    .wrap { max-width:560px; margin:0 auto; padding:16px; }
+    .card { background:#fff; border-radius:20px; overflow:hidden; box-shadow:0 5px 22px rgba(0,0,0,.10); }
+    .hero { width:100%; display:block; background:#fff; }
+    .content { padding:22px; }
+    .sub { font-size:18px; line-height:1.45; margin:0 0 18px; text-align:center; }
+    button { width:100%; min-height:64px; border:0; border-radius:14px; font-size:20px; font-weight:800; cursor:pointer; padding:14px; }
+    #locBtn { background:#c81010; color:#fff; }
+    #retryBtn { margin-top:12px; background:#e9ecef; color:#111; display:none; }
+    #status { margin-top:18px; min-height:48px; font-size:17px; line-height:1.4; text-align:center; }
+    .small { font-size:14px; color:#555; line-height:1.4; margin-top:18px; text-align:center; }
+    .error { font-weight:700; }
+    @media (max-width:420px) {
+      .wrap { padding:10px; }
+      .content { padding:18px; }
+      .sub { font-size:17px; }
+      button { font-size:18px; }
+    }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <img src="samu_localizacao.png" alt="SAMU 192 - Envie sua localização" class="hero">
+    <div class="content">
+      <p class="sub">Toque no botão abaixo e, quando o celular perguntar, escolha <b>Permitir localização</b>.</p>
+      <button id="locBtn">PERMITIR LOCALIZAÇÃO</button>
+      <button id="retryBtn">TENTAR NOVAMENTE</button>
+      <div id="status"></div>
+      <p class="small">Sua localização será usada somente para auxiliar o atendimento desta ocorrência. O endereço informado por telefone continua sendo confirmado pela Central.</p>
+    </div>
+  </div>
+</div>
+
+<script>
+const BACKEND_URL = "https://script.google.com/macros/s/AKfycbw7n1frCkcQ_1ACqrzLuMfqf1Cyj9--v1MiDh6e_lK_DbHdQsdgBe8yWLO0o9apM8nP3g/exec";
+const params = new URLSearchParams(location.search);
+const ocorrencia = params.get("oc") || "";
+const token = params.get("t") || "";
+const locBtn = document.getElementById("locBtn");
+const retryBtn = document.getElementById("retryBtn");
+const statusBox = document.getElementById("status");
+
+function setStatus(msg, cls="") {
+  statusBox.className = cls;
+  statusBox.innerHTML = msg;
+}
+
+function submitLocation(lat, lng, accuracy) {
+  setStatus("Localização encontrada. Enviando para a Central…");
+  const form = document.createElement("form");
+  form.method = "POST";
+  form.action = BACKEND_URL;
+  const fields = { oc:ocorrencia, t:token, lat:lat, lng:lng, acc:accuracy, deviceTime:new Date().toISOString() };
+  for (const [name, value] of Object.entries(fields)) {
+    const input = document.createElement("input");
+    input.type = "hidden";
+    input.name = name;
+    input.value = String(value);
+    form.appendChild(input);
+  }
+  document.body.appendChild(form);
+  form.submit();
+}
+
+function localizar() {
+  locBtn.disabled = true;
+  retryBtn.style.display = "none";
+
+  if (!ocorrencia || !token) {
+    setStatus("Link inválido. Ligue novamente para o 192 e solicite um novo link.", "error");
+    locBtn.disabled = false;
+    return;
+  }
+
+  if (!navigator.geolocation) {
+    setStatus("Este aparelho não permite obter a localização pelo navegador. Informe o endereço à Central.", "error");
+    locBtn.disabled = false;
+    return;
+  }
+
+  setStatus("Obtendo sua localização… mantenha esta tela aberta.");
+
+  let best = null, watchId = null, finished = false;
+
+  function finish() {
+    if (finished) return;
+    finished = true;
+    if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+    if (!best) {
+      setStatus("Não foi possível obter a localização. Confirme o endereço por telefone com a Central.", "error");
+      locBtn.disabled = false;
+      retryBtn.style.display = "block";
+      return;
+    }
+    submitLocation(best.latitude, best.longitude, Math.round(best.accuracy));
+  }
+
+  watchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const c = pos.coords;
+      if (!best || c.accuracy < best.accuracy) {
+        best = { latitude:c.latitude, longitude:c.longitude, accuracy:c.accuracy };
+        setStatus(`Localização encontrada (precisão aproximada: ${Math.round(c.accuracy)} m). Refinando…`);
+      }
+      if (c.accuracy <= 25) finish();
+    },
+    (err) => {
+      let msg = "Não foi possível acessar a localização.";
+      if (err.code === 1) msg = "A localização não foi autorizada. Toque em TENTAR NOVAMENTE e escolha Permitir.";
+      if (err.code === 2) msg = "O celular não conseguiu determinar a localização. Confirme o endereço por telefone.";
+      if (err.code === 3) msg = "A localização demorou mais que o esperado. Tente novamente.";
+      setStatus(msg, "error");
+      locBtn.disabled = false;
+      retryBtn.style.display = "block";
+    },
+    { enableHighAccuracy:true, maximumAge:0, timeout:15000 }
+  );
+
+  setTimeout(finish, 9000);
+}
+
+locBtn.addEventListener("click", localizar);
+retryBtn.addEventListener("click", localizar);
+</script>
+</body>
+</html>
