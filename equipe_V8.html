@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SAMU 192 — Rastreamento da ocorrência</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#f4f6f8;font-family:Arial,Helvetica,sans-serif;color:#111}
+.wrap{max-width:560px;margin:0 auto;padding:16px}
+.card{background:#fff;border-radius:20px;padding:22px;box-shadow:0 5px 22px rgba(0,0,0,.10)}
+.badge{display:inline-block;background:#b71c1c;color:#fff;font-weight:800;padding:8px 12px;border-radius:10px;margin-bottom:12px}
+h1{font-size:26px;margin:0 0 8px}
+p{font-size:17px;line-height:1.45}
+button{width:100%;min-height:62px;border:0;border-radius:14px;font-size:19px;font-weight:800;padding:12px;cursor:pointer}
+#start{background:#b71c1c;color:#fff}
+#stop{background:#e9ecef;color:#111;margin-top:12px;display:none}
+.status{margin-top:18px;padding:14px;border-radius:12px;background:#f5f5f5;font-size:16px;line-height:1.45}
+.ok{background:#e8f5e9}
+.warn{background:#fff8e1}
+.err{background:#ffebee}
+.small{font-size:13px;color:#555;margin-top:16px}
+.ficha{font-size:22px;font-weight:800;background:#f4f6f8;border:2px solid #b71c1c;border-radius:12px;padding:10px 14px;margin:10px 0 16px;color:#b71c1c;text-align:center}
+</style>
+</head>
+<body>
+<div class="wrap"><div class="card">
+<div class="badge">SAMU 192</div>
+<h1>Rastreamento da ocorrência</h1>
+<div id="fichaBox" class="ficha">Ficha: carregando…</div>
+<p>Abra este link no início do deslocamento. Depois de iniciar, mantenha esta página aberta. O sistema tentará registrar automaticamente chegada à cena, saída da cena e chegada ao destino.</p>
+<button id="start">INICIAR RASTREAMENTO</button>
+<button id="stop">ENCERRAR RASTREAMENTO</button>
+<div id="status" class="status">Aguardando início.</div>
+<p class="small">O rastreamento funciona somente durante esta ocorrência. O primeiro integrante da equipe que iniciar será usado como rastreador principal; os demais links ficam como reserva. Para maior confiabilidade, mantenha esta página aberta durante o deslocamento.</p>
+</div></div>
+<script>
+const BACKEND_URL = "https://script.google.com/macros/s/AKfycbw7n1frCkcQ_1ACqrzLuMfqf1Cyj9--v1MiDh6e_lK_DbHdQsdgBe8yWLO0o9apM8nP3g/exec";
+const params = new URLSearchParams(location.search);
+const ocorrencia = params.get("oc") || "";
+const token = params.get("t") || "";
+
+const startBtn = document.getElementById("start");
+const stopBtn = document.getElementById("stop");
+const statusBox = document.getElementById("status");
+const fichaBox = document.getElementById("fichaBox");
+
+if (ocorrencia) {
+  fichaBox.textContent = "FICHA " + ocorrencia;
+  document.title = "SAMU 192 — Ficha " + ocorrencia;
+} else {
+  fichaBox.textContent = "FICHA NÃO IDENTIFICADA";
+}
+
+let watchId = null;
+let wakeLock = null;
+let lastSentAt = 0;
+let active = false;
+const startedAt = Date.now();
+const MAX_MISSION_MS = 6 * 60 * 60 * 1000;
+
+function setStatus(msg, cls="") {
+  statusBox.className = "status " + cls;
+  statusBox.textContent = msg;
+}
+
+async function requestWakeLock() {
+  try {
+    if ("wakeLock" in navigator && document.visibilityState === "visible") {
+      wakeLock = await navigator.wakeLock.request("screen");
+    }
+  } catch (e) {}
+}
+
+async function sendPosition(pos) {
+  const now = Date.now();
+  if (now - lastSentAt < 10000) return;
+  lastSentAt = now;
+
+  const c = pos.coords;
+  const url = new URL(BACKEND_URL);
+  url.searchParams.set("mode", "crew");
+  url.searchParams.set("oc", ocorrencia);
+  url.searchParams.set("t", token);
+  url.searchParams.set("lat", c.latitude);
+  url.searchParams.set("lng", c.longitude);
+  url.searchParams.set("acc", Number.isFinite(c.accuracy) ? Math.round(c.accuracy) : "");
+  url.searchParams.set("speed", Number.isFinite(c.speed) ? c.speed : "");
+  url.searchParams.set("heading", Number.isFinite(c.heading) ? c.heading : "");
+  url.searchParams.set("_", now);
+
+  try {
+    await fetch(url.toString(), {mode:"no-cors", cache:"no-store"});
+    setStatus(
+      "Rastreamento ativo • precisão aproximada " +
+      Math.round(c.accuracy || 0) + " m • última atualização " +
+      new Date().toLocaleTimeString("pt-BR"),
+      "ok"
+    );
+  } catch (e) {
+    setStatus("Sem conexão no momento. O GPS continua ativo e tentará enviar novas posições.", "warn");
+  }
+
+  if (Date.now() - startedAt > MAX_MISSION_MS) stopTracking("Rastreamento encerrado automaticamente pelo limite de tempo.");
+}
+
+function startTracking() {
+  if (!ocorrencia || !token) {
+    setStatus("Link inválido. Solicite um novo link à Central.", "err");
+    return;
+  }
+
+  if (!navigator.geolocation) {
+    setStatus("Este aparelho não oferece geolocalização pelo navegador.", "err");
+    return;
+  }
+
+  active = true;
+  requestWakeLock();
+  startBtn.style.display = "none";
+  stopBtn.style.display = "block";
+  setStatus("Obtendo localização… mantenha esta página aberta.", "warn");
+
+  watchId = navigator.geolocation.watchPosition(
+    sendPosition,
+    err => {
+      let msg = "Não foi possível obter a localização.";
+      if (err.code === 1) msg = "Localização não autorizada. Permita o acesso à localização para iniciar a ocorrência.";
+      if (err.code === 2) msg = "O aparelho não conseguiu determinar a posição.";
+      if (err.code === 3) msg = "A localização demorou mais que o esperado.";
+      setStatus(msg, "err");
+    },
+    {enableHighAccuracy:true, maximumAge:3000, timeout:20000}
+  );
+}
+
+function stopTracking(message="Rastreamento encerrado.") {
+  active = false;
+  if (watchId !== null) {
+    navigator.geolocation.clearWatch(watchId);
+    watchId = null;
+  }
+  if (wakeLock) {
+    try { wakeLock.release(); } catch (e) {}
+    wakeLock = null;
+  }
+  startBtn.style.display = "block";
+  stopBtn.style.display = "none";
+  setStatus(message, "warn");
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (active && document.visibilityState === "visible") requestWakeLock();
+});
+
+startBtn.addEventListener("click", startTracking);
+stopBtn.addEventListener("click", () => stopTracking());
+
+</script>
+</body>
+</html>
