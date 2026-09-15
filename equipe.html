@@ -166,7 +166,50 @@ function begin(){
   );
 }
 
-function end(){
+async function end(){
+  active=false;
+
+  if(watch!==null){
+    navigator.geolocation.clearWatch(watch);
+  }
+  watch=null;
+
+  if(wake){
+    try{await wake.release()}catch(e){}
+    wake=null;
+  }
+
+  start.style.display='block';
+  stop.style.display='none';
+
+  show('Encerrando rastreamento…','warn');
+
+  const u=new URL(BACKEND);
+
+  u.searchParams.set('mode','crewstop');
+  u.searchParams.set('oc',oc);
+
+  if(id)u.searchParams.set('id',id);
+  if(rid)u.searchParams.set('rid',rid);
+
+  u.searchParams.set('t',token);
+  u.searchParams.set('_',Date.now());
+
+  try{
+    await fetch(u.toString(),{
+      mode:'no-cors',
+      cache:'no-store'
+    });
+
+    show('Rastreamento encerrado.','warn');
+
+  }catch(e){
+    show(
+      'GPS encerrado neste aparelho, mas não foi possível confirmar o encerramento com a Central.',
+      'warn'
+    );
+  }
+}
   active=false;
   if(watch!==null)navigator.geolocation.clearWatch(watch);
   watch=null;
