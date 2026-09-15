@@ -27,6 +27,7 @@ button,.route{width:100%;min-height:62px;border:0;border-radius:14px;font-size:1
 .dest{margin-top:18px;border:2px solid #1565c0;background:#e3f2fd;border-radius:16px;padding:15px;display:none}
 .dest-title{font-size:13px;font-weight:800;color:#0d47a1;text-transform:uppercase;letter-spacing:.4px}
 .dest-name{font-size:20px;font-weight:800;margin:7px 0 12px}
+.route-grid{display:grid;gap:10px}
 .route{background:#1565c0;color:#fff;min-height:58px}
 .route.disabled{background:#b0bec5;pointer-events:none}
 .nav-note{font-size:14px;line-height:1.4;color:#37474f;margin-top:10px}
@@ -48,7 +49,10 @@ button,.route{width:100%;min-height:62px;border:0;border-radius:14px;font-size:1
 <div id="destination" class="dest">
   <div class="dest-title">Destino definido pela Regulação</div>
   <div id="destName" class="dest-name">Aguardando destino</div>
-  <a id="route" class="route disabled" href="#" target="_blank" rel="noopener">ROTA PARA O DESTINO</a>
+  <div class="route-grid">
+  <a id="routeMaps" class="route disabled" href="#" target="_blank" rel="noopener">GOOGLE MAPS</a>
+  <a id="routeWaze" class="route disabled" href="#" target="_blank" rel="noopener">WAZE</a>
+</div>
   <div id="navNote" class="nav-note">Aguardando coordenadas do destino.</div>
 </div>
 
@@ -72,7 +76,8 @@ const start=document.getElementById('start'),
   air=document.getElementById('air'),
   destination=document.getElementById('destination'),
   destName=document.getElementById('destName'),
-  route=document.getElementById('route'),
+  routeMaps=document.getElementById('routeMaps'),
+routeWaze=document.getElementById('routeWaze'),
   navNote=document.getElementById('navNote');
 
 document.getElementById('ficha').textContent=oc?'FICHA '+oc:'FICHA NÃO IDENTIFICADA';
@@ -181,38 +186,68 @@ function updateDestination(data){
     return;
   }
 
+  destination.style.display='block';
+
   if(data.closed){
-    destination.style.display='block';
     destName.textContent='Recurso '+(data.status||'encerrado');
-    route.classList.add('disabled');
-    route.removeAttribute('href');
+
+    routeMaps.classList.add('disabled');
+    routeMaps.removeAttribute('href');
+
+    routeWaze.classList.add('disabled');
+    routeWaze.removeAttribute('href');
+
     navNote.textContent='Navegação encerrada para este recurso.';
     return;
   }
 
-  destination.style.display='block';
-
   if(!data.destination){
     destName.textContent='Aguardando destino';
-    route.classList.add('disabled');
-    route.removeAttribute('href');
+
+    routeMaps.classList.add('disabled');
+    routeMaps.removeAttribute('href');
+
+    routeWaze.classList.add('disabled');
+    routeWaze.removeAttribute('href');
+
     navNote.textContent='A Regulação ainda não registrou um destino hospitalar.';
     return;
   }
 
   destName.textContent=data.destination;
 
-  if(data.hasDestinationCoordinates&&data.mapsRoute){
-    route.href=data.mapsRoute;
-    route.classList.remove('disabled');
-    navNote.textContent='Destino atualizado automaticamente pela Central. Toque no botão para abrir a rota.';
+  const lat=Number(data.destinationLat);
+  const lng=Number(data.destinationLng);
+
+  if(
+    data.hasDestinationCoordinates &&
+    Number.isFinite(lat) &&
+    Number.isFinite(lng)
+  ){
+    routeMaps.href=data.mapsRoute ||
+      'https://www.google.com/maps/dir/?api=1&destination='+
+      encodeURIComponent(lat+','+lng)+
+      '&travelmode=driving';
+
+    routeWaze.href=
+      'https://www.waze.com/ul?ll='+
+      encodeURIComponent(lat+','+lng)+
+      '&navigate=yes';
+
+    routeMaps.classList.remove('disabled');
+    routeWaze.classList.remove('disabled');
+
+    navNote.textContent='Destino atualizado automaticamente pela Central. Escolha Google Maps ou Waze.';
   }else{
-    route.classList.add('disabled');
-    route.removeAttribute('href');
+    routeMaps.classList.add('disabled');
+    routeMaps.removeAttribute('href');
+
+    routeWaze.classList.add('disabled');
+    routeWaze.removeAttribute('href');
+
     navNote.textContent='Destino definido, mas ainda sem coordenada de navegação cadastrada.';
   }
 }
-
 function pollNavigation(){
   if(!oc||!id||!rid||!token)return;
 
