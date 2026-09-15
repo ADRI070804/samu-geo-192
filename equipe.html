@@ -210,19 +210,6 @@ async function end(){
     );
   }
 }
-  active=false;
-  if(watch!==null)navigator.geolocation.clearWatch(watch);
-  watch=null;
-
-  if(wake){
-    try{wake.release()}catch(e){}
-    wake=null;
-  }
-
-  start.style.display='block';
-  stop.style.display='none';
-  show('Rastreamento encerrado.','warn');
-}
 
 function updateDestination(data){
   if(!data||!data.ok){
