@@ -31,6 +31,11 @@ button,.route{width:100%;min-height:62px;border:0;border-radius:14px;font-size:1
 .route{background:#1565c0;color:#fff;min-height:58px}
 .route.disabled{background:#b0bec5;pointer-events:none}
 .nav-note{font-size:14px;line-height:1.4;color:#37474f;margin-top:10px}
+.signal{margin:12px 0;padding:11px 13px;border-radius:12px;font-size:15px;font-weight:800;text-align:center}
+.signal.neutral{background:#eceff1;color:#37474f}
+.signal.ok{background:#e8f5e9;color:#1b5e20}
+.signal.warn{background:#fff8e1;color:#e65100}
+.signal.err{background:#ffebee;color:#b71c1c}
 </style>
 </head>
 <body>
@@ -56,6 +61,7 @@ button,.route{width:100%;min-height:62px;border:0;border-radius:14px;font-size:1
   <div id="navNote" class="nav-note">Aguardando coordenadas do destino.</div>
 </div>
 
+<div id="signal" class="signal neutral">⚪ Aguardando rastreamento</div>
 <div id="status" class="status">Aguardando início.</div>
 <p class="small">Este link é individual. Outro recurso da mesma ficha deve usar o próprio link.</p>
 </div></div>
@@ -73,6 +79,7 @@ const q=new URLSearchParams(location.search),
 const start=document.getElementById('start'),
   stop=document.getElementById('stop'),
   status=document.getElementById('status'),
+  signal=document.getElementById('signal'),
   air=document.getElementById('air'),
   destination=document.getElementById('destination'),
   destName=document.getElementById('destName'),
@@ -95,11 +102,47 @@ if(tipo==='ASA FIXA'){
   status.className='status ok';
 }
 
-let watch=null,wake=null,last=0,active=false,navSeq=0,navTimer=null;
+let watch=null,wake=null,last=0,active=false,navSeq=0,navTimer=null,lastDestination='';
 
 function show(t,c=''){
   status.className='status '+c;
   status.textContent=t;
+}
+
+function showSignal(t,c='neutral'){
+  signal.className='signal '+c;
+  signal.textContent=t;
+}
+
+function formatSignalTime(iso){
+  const d=new Date(iso||'');
+  return Number.isNaN(d.getTime())?'':d.toLocaleTimeString('pt-BR');
+}
+
+function updateSignal(data){
+  if(!data||!data.ok){
+    showSignal('🟠 Sem confirmação da Central','warn');
+    return;
+  }
+
+  if(data.closed){
+    showSignal('⚪ Rastreamento encerrado','neutral');
+    return;
+  }
+
+  const tracker=String(data.trackerStatus||'').toUpperCase();
+  const age=Number(data.signalAgeSeconds);
+  const time=formatSignalTime(data.lastSignalAt);
+
+  if(tracker.includes('OFFLINE')||(Number.isFinite(age)&&age>600)){
+    showSignal('🔴 Rastreador offline'+(time?' • último sinal '+time:''),'err');
+  }else if(tracker.includes('ATRASADO')||(Number.isFinite(age)&&age>180)){
+    showSignal('🟠 Sinal atrasado'+(time?' • último sinal '+time:''),'warn');
+  }else if(data.lastSignalAt){
+    showSignal('🟢 Online • último sinal '+time,'ok');
+  }else{
+    showSignal('⚪ Aguardando o primeiro sinal GPS','neutral');
+  }
 }
 
 async function lock(){
@@ -133,8 +176,10 @@ async function send(pos){
       ' m • '+new Date().toLocaleTimeString('pt-BR'),
       'ok'
     );
+    showSignal('🟢 Online • envio '+new Date().toLocaleTimeString('pt-BR'),'ok');
   }catch(e){
     show('Sem conexão. O GPS continuará tentando enviar novas posições.','warn');
+    showSignal('🔴 Sem conexão com a Central','err');
   }
 }
 
@@ -153,6 +198,7 @@ function begin(){
   start.style.display='none';
   stop.style.display='block';
   show('Obtendo localização…','warn');
+  showSignal('🟡 Obtendo sinal GPS…','warn');
 
   watch=navigator.geolocation.watchPosition(
     send,
@@ -202,6 +248,7 @@ async function end(){
     });
 
     show('Rastreamento encerrado.','warn');
+    showSignal('⚪ Rastreamento encerrado','neutral');
 
   }catch(e){
     show(
@@ -212,6 +259,8 @@ async function end(){
 }
 
 function updateDestination(data){
+  updateSignal(data);
+
   if(!data||!data.ok){
     return;
   }
@@ -244,7 +293,16 @@ function updateDestination(data){
     return;
   }
 
+  const destinationChanged=lastDestination&&lastDestination!==data.destination;
   destName.textContent=data.destination;
+
+  if(destinationChanged){
+    navNote.textContent='🔔 NOVO DESTINO RECEBIDO: '+data.destination;
+    if('vibrate' in navigator){
+      try{navigator.vibrate([200,100,200])}catch(e){}
+    }
+  }
+  lastDestination=data.destination;
 
   const lat=Number(data.destinationLat);
   const lng=Number(data.destinationLng);
@@ -267,7 +325,9 @@ function updateDestination(data){
     routeMaps.classList.remove('disabled');
     routeWaze.classList.remove('disabled');
 
-    navNote.textContent='Destino atualizado automaticamente pela Central. Escolha Google Maps ou Waze.';
+    if(!destinationChanged){
+      navNote.textContent='Destino atualizado automaticamente pela Central. Escolha Google Maps ou Waze.';
+    }
   }else{
     routeMaps.classList.add('disabled');
     routeMaps.removeAttribute('href');
@@ -308,6 +368,7 @@ function pollNavigation(){
   s.onerror=function(){
     try{delete window[cb]}catch(e){window[cb]=undefined}
     s.remove();
+    showSignal('🟠 Sem resposta da Central','warn');
   };
 
   document.head.appendChild(s);
