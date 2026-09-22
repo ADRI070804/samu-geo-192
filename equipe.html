@@ -15,6 +15,7 @@ p{font-size:17px;line-height:1.45}
 .box{font-size:20px;font-weight:800;border-radius:12px;padding:10px 14px;text-align:center;margin:8px 0}
 .ficha{border:2px solid #b71c1c;color:#b71c1c}
 .recurso{background:#eceff1;border:2px solid #37474f;color:#263238;margin-bottom:16px}
+button:disabled{opacity:.65;cursor:default}
 button,.route{width:100%;min-height:62px;border:0;border-radius:14px;font-size:19px;font-weight:800;padding:12px;cursor:pointer;text-decoration:none;display:flex;align-items:center;justify-content:center;text-align:center}
 #start{background:#b71c1c;color:#fff}
 #stop{background:#e9ecef;color:#111;margin-top:12px;display:none}
@@ -102,7 +103,45 @@ if(tipo==='ASA FIXA'){
   status.className='status ok';
 }
 
+// V10.15.3 — parada local imediata e confirmação do estado pela Central.
 let watch=null,wake=null,last=0,active=false,navSeq=0,navTimer=null,lastDestination='';
+let runId=0,pendingSend=null,pendingStop=null,stopRequest=null,stopState='idle',navApplied=0;
+const REPLY_TIMEOUT=15000;
+
+function waitForReply(promise){
+  return new Promise((resolve,reject)=>{
+    const timer=setTimeout(()=>reject(new Error('TIMEOUT')),REPLY_TIMEOUT);
+    Promise.resolve(promise).then(
+      value=>{clearTimeout(timer);resolve(value)},
+      error=>{clearTimeout(timer);reject(error)}
+    );
+  });
+}
+
+function centralStopped(data){
+  return !!(data&&data.ok&&(data.closed||
+    String(data.trackerStatus||'').toUpperCase().includes('ENCERRADO')));
+}
+
+function renderStopControls(){
+  if(stopState==='idle')return;
+  start.style.display='block';
+  start.disabled=stopState!=='confirmed'||!!stopRequest||!!pendingSend||!!pendingStop;
+  stop.style.display=stopState==='confirmed'?'none':'block';
+  stop.disabled=!!stopRequest;
+  stop.textContent=stopRequest?'CONFIRMANDO ENCERRAMENTO…':'CONFIRMAR ENCERRAMENTO';
+}
+
+function showStopPending(){
+  show('GPS parado neste aparelho. A Central ainda não confirmou o encerramento. Toque em CONFIRMAR ENCERRAMENTO para tentar novamente.','warn');
+  showSignal('🟠 Encerramento sem confirmação da Central','warn');
+}
+
+function stopUnconfirmed(){
+  stopState='unconfirmed';
+  showStopPending();
+  renderStopControls();
+}
 
 function show(t,c=''){
   status.className='status '+c;
@@ -120,6 +159,20 @@ function formatSignalTime(iso){
 }
 
 function updateSignal(data){
+  if(stopState!=='idle'){
+    if(centralStopped(data)&&!pendingSend&&!pendingStop){
+      stopState='confirmed';
+      show('Rastreamento encerrado. Confirmação recebida da Central.','ok');
+      showSignal('⚪ Rastreamento encerrado','neutral');
+    }else if(stopState==='confirmed'||stopState==='unconfirmed'){
+      stopState='unconfirmed';
+      showStopPending();
+    }else{
+      showSignal('🟠 Aguardando confirmação do encerramento','warn');
+    }
+    renderStopControls();
+    return;
+  }
   if(!data||!data.ok){
     showSignal('🟠 Sem confirmação da Central','warn');
     return;
@@ -134,7 +187,9 @@ function updateSignal(data){
   const age=Number(data.signalAgeSeconds);
   const time=formatSignalTime(data.lastSignalAt);
 
-  if(tracker.includes('OFFLINE')||(Number.isFinite(age)&&age>600)){
+  if(tracker.includes('ENCERRADO')){
+    showSignal('⚪ Rastreamento encerrado na Central','neutral');
+  }else if(tracker.includes('OFFLINE')||(Number.isFinite(age)&&age>600)){
     showSignal('🔴 Rastreador offline'+(time?' • último sinal '+time:''),'err');
   }else if(tracker.includes('ATRASADO')||(Number.isFinite(age)&&age>180)){
     showSignal('🟠 Sinal atrasado'+(time?' • último sinal '+time:''),'warn');
@@ -146,13 +201,21 @@ function updateSignal(data){
 }
 
 async function lock(){
+  const run=runId;
   try{
-    if('wakeLock'in navigator&&document.visibilityState==='visible')
-      wake=await navigator.wakeLock.request('screen');
+    if(!active||!('wakeLock'in navigator)||document.visibilityState!=='visible'||wake)return;
+    const acquired=await navigator.wakeLock.request('screen');
+    if(!active||run!==runId||wake){
+      try{await acquired.release()}catch(e){}
+      return;
+    }
+    wake=acquired;
+    acquired.addEventListener('release',()=>{if(wake===acquired)wake=null});
   }catch(e){}
 }
 
-async function send(pos){
+async function send(pos,run=runId){
+  if(!active||run!==runId||pendingSend)return;
   const now=Date.now();
   if(now-last<10000)return;
   last=now;
@@ -168,22 +231,29 @@ async function send(pos){
   u.searchParams.set('acc',Number.isFinite(c.accuracy)?Math.round(c.accuracy):'');
   u.searchParams.set('_',now);
 
+  const request=Promise.resolve().then(()=>fetch(u.toString(),{mode:'no-cors',cache:'no-store'}));
+  pendingSend=request;
   try{
-    await fetch(u.toString(),{mode:'no-cors',cache:'no-store'});
-    show(
-      'Rastreamento ativo para '+recurso+
+    await request;
+    if(!active||run!==runId)return;
+    show('GPS ativo neste aparelho para '+recurso+
       ' • precisão aproximada '+Math.round(c.accuracy||0)+
-      ' m • '+new Date().toLocaleTimeString('pt-BR'),
-      'ok'
-    );
-    showSignal('🟢 Online • envio '+new Date().toLocaleTimeString('pt-BR'),'ok');
+      ' m. Confira abaixo o último recebimento pela Central.','ok');
+    showSignal('🟡 Posição enviada; aguardando confirmação da Central','warn');
+    pollNavigation();
   }catch(e){
+    if(!active||run!==runId)return;
     show('Sem conexão. O GPS continuará tentando enviar novas posições.','warn');
     showSignal('🔴 Sem conexão com a Central','err');
+  }finally{
+    if(pendingSend===request)pendingSend=null;
+    renderStopControls();
   }
 }
 
 function begin(){
+  if(active||stopRequest||pendingSend||pendingStop||
+    stopState==='pending'||stopState==='unconfirmed')return;
   if(!oc||!token){
     show('Link inválido. Solicite novo link à Central.','err');
     return;
@@ -193,69 +263,91 @@ function begin(){
     return;
   }
 
+  const run=++runId;
   active=true;
+  stopState='idle';
+  last=0;
   lock();
+  start.disabled=false;
   start.style.display='none';
+  stop.disabled=false;
+  stop.textContent='ENCERRAR RASTREAMENTO';
   stop.style.display='block';
   show('Obtendo localização…','warn');
   showSignal('🟡 Obtendo sinal GPS…','warn');
 
   watch=navigator.geolocation.watchPosition(
-    send,
-    e=>show(
-      e.code===1
+    pos=>send(pos,run),
+    e=>{
+      if(!active||run!==runId)return;
+      show(e.code===1
         ?'Localização não autorizada. Permita o acesso ao GPS.'
-        :'Não foi possível obter a localização.',
-      'err'
-    ),
+        :'Não foi possível obter a localização.','err');
+    },
     {enableHighAccuracy:true,maximumAge:3000,timeout:20000}
   );
 }
 
-async function end(){
+function end(){
+  if(stopRequest)return stopRequest;
+  if(stopState==='confirmed')return Promise.resolve();
   active=false;
+  const run=++runId;
 
-  if(watch!==null){
-    navigator.geolocation.clearWatch(watch);
-  }
+  if(watch!==null)navigator.geolocation.clearWatch(watch);
   watch=null;
 
-  if(wake){
-    try{await wake.release()}catch(e){}
-    wake=null;
-  }
+  // Liberar a tela não deve atrasar o envio da parada.
+  const heldWake=wake;
+  wake=null;
+  if(heldWake)Promise.resolve().then(()=>heldWake.release()).catch(()=>{});
 
-  start.style.display='block';
-  stop.style.display='none';
+  stopState='pending';
+  show('GPS parado neste aparelho. Confirmando encerramento com a Central…','warn');
+  showSignal('🟠 Aguardando confirmação do encerramento','warn');
 
-  show('Encerrando rastreamento…','warn');
+  stopRequest=Promise.resolve().then(async()=>{
+    try{
+      // Uma posição já enviada deve terminar antes do pedido de parada.
+      // Se não terminar, manter pendência em vez de presumir sucesso.
+      if(pendingSend)await waitForReply(pendingSend.catch(()=>{}));
+      if(run!==runId)return;
 
-  const u=new URL(BACKEND);
+      if(!pendingStop){
+        const u=new URL(BACKEND);
+        u.searchParams.set('mode','crewstop');
+        u.searchParams.set('oc',oc);
+        if(id)u.searchParams.set('id',id);
+        if(rid)u.searchParams.set('rid',rid);
+        u.searchParams.set('t',token);
+        u.searchParams.set('_',Date.now());
 
-  u.searchParams.set('mode','crewstop');
-  u.searchParams.set('oc',oc);
+        const request=Promise.resolve().then(()=>fetch(u.toString(),{mode:'no-cors',cache:'no-store'}));
+        pendingStop=request;
+        const settled=()=>{
+          if(pendingStop===request)pendingStop=null;
+          renderStopControls();
+        };
+        request.then(settled,settled);
+      }
 
-  if(id)u.searchParams.set('id',id);
-  if(rid)u.searchParams.set('rid',rid);
-
-  u.searchParams.set('t',token);
-  u.searchParams.set('_',Date.now());
-
-  try{
-    await fetch(u.toString(),{
-      mode:'no-cors',
-      cache:'no-store'
-    });
-
-    show('Rastreamento encerrado.','warn');
-    showSignal('⚪ Rastreamento encerrado','neutral');
-
-  }catch(e){
-    show(
-      'GPS encerrado neste aparelho, mas não foi possível confirmar o encerramento com a Central.',
-      'warn'
-    );
-  }
+      await waitForReply(pendingStop);
+      if(run!==runId)return;
+      // A resposta opaca do fetch não comprova STOPPED. Consultar a Central.
+      const data=await pollNavigation();
+      if(run!==runId)return;
+      if(!centralStopped(data)||pendingSend||pendingStop)stopUnconfirmed();
+    }catch(e){
+      if(run===runId)stopUnconfirmed();
+    }
+  }).finally(()=>{
+    if(run===runId){
+      stopRequest=null;
+      renderStopControls();
+    }
+  });
+  renderStopControls();
+  return stopRequest;
 }
 
 function updateDestination(data){
@@ -339,39 +431,42 @@ function updateDestination(data){
   }
 }
 function pollNavigation(){
-  if(!oc||!id||!rid||!token)return;
-
-  const cb='samugeoNavCb_'+(++navSeq)+'_'+Date.now();
-
-  window[cb]=function(data){
-    try{updateDestination(data)}
-    finally{
+  if(!oc||!id||!rid||!token)return Promise.resolve(null);
+  const run=runId,seq=++navSeq;
+  const cb='samugeoNavCb_'+seq+'_'+Date.now();
+  return new Promise(resolve=>{
+    const s=document.createElement('script');
+    let timer,done=false;
+    function finish(data){
+      if(done)return;
+      done=true;
+      clearTimeout(timer);
       try{delete window[cb]}catch(e){window[cb]=undefined}
-      const s=document.getElementById(cb);
-      if(s)s.remove();
+      s.remove();
+      if(run===runId&&seq>=navApplied){
+        navApplied=seq;
+        if(data)updateDestination(data);
+        else if(stopState==='idle')showSignal('🟠 Sem resposta da Central','warn');
+      }
+      resolve(run===runId?data:null);
     }
-  };
+    window[cb]=data=>finish(data);
+    const u=new URL(BACKEND);
+    u.searchParams.set('mode','crewinfo');
+    u.searchParams.set('oc',oc);
+    u.searchParams.set('id',id);
+    u.searchParams.set('rid',rid);
+    u.searchParams.set('t',token);
+    u.searchParams.set('callback',cb);
+    u.searchParams.set('_',Date.now());
 
-  const u=new URL(BACKEND);
-  u.searchParams.set('mode','crewinfo');
-  u.searchParams.set('oc',oc);
-  u.searchParams.set('id',id);
-  u.searchParams.set('rid',rid);
-  u.searchParams.set('t',token);
-  u.searchParams.set('callback',cb);
-  u.searchParams.set('_',Date.now());
-
-  const s=document.createElement('script');
-  s.id=cb;
-  s.src=u.toString();
-  s.async=true;
-  s.onerror=function(){
-    try{delete window[cb]}catch(e){window[cb]=undefined}
-    s.remove();
-    showSignal('🟠 Sem resposta da Central','warn');
-  };
-
-  document.head.appendChild(s);
+    s.id=cb;
+    s.src=u.toString();
+    s.async=true;
+    s.onerror=()=>finish(null);
+    timer=setTimeout(()=>finish(null),REPLY_TIMEOUT);
+    document.head.appendChild(s);
+  });
 }
 
 start.addEventListener('click',begin);
